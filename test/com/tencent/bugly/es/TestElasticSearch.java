@@ -1,12 +1,20 @@
 package com.tencent.bugly.es;
 
+import org.elasticsearch.action.search.SearchRequestBuilder;
+import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.update.UpdateRequestBuilder;
+import org.elasticsearch.client.Client;
 import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.common.lang3.StringUtils;
 import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.elasticsearch.common.transport.TransportAddress;
+import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.index.query.BoolFilterBuilder;
+import org.elasticsearch.index.query.FilterBuilders;
+import org.elasticsearch.index.query.HasChildFilterBuilder;
+import org.elasticsearch.index.query.OrFilterBuilder;
 import org.elasticsearch.script.ScriptService;
 import org.junit.*;
 
@@ -21,7 +29,7 @@ public class TestElasticSearch {
     // private static final String clusterName = "bugly_web";
     private static final String clusterName = "bugly_inner";
     private static final String clusterAddr = "localhost:9300";
-    private static TransportClient client;
+    private static Client client;
 
 
     public static void initClient() {
@@ -46,7 +54,7 @@ public class TestElasticSearch {
             }
             TransportAddress transportAddress =
                     new InetSocketTransportAddress(portAndAddr[0], Integer.parseInt(portAndAddr[1]));
-            client.addTransportAddress(transportAddress);
+            ((TransportClient) client).addTransportAddress(transportAddress);
         }
     }
 
@@ -143,5 +151,66 @@ public class TestElasticSearch {
         updateRequestBuilder.setScript(script, ScriptService.ScriptType.INLINE);
 
         updateRequestBuilder.execute().actionGet();
+    }
+
+    @Test
+    public void testFilterItem() {
+        BoolFilterBuilder boolFilter = FilterBuilders.boolFilter();
+        boolFilter.must(FilterBuilders.termFilter("issueId", 18873));
+
+        OrFilterBuilder filterBuilder = FilterBuilders.orFilter();
+        filterBuilder.add(FilterBuilders.termFilter("tags", "1"));
+        filterBuilder.add(FilterBuilders.termFilter("tags", "2"));
+        filterBuilder.add(FilterBuilders.termFilter("tags", "3"));
+        boolFilter.must(filterBuilder);
+
+        String index = "1104520095_1";
+        String type = "issue_1104520095_1";
+
+        SearchRequestBuilder searchRequestBuilder = client.prepareSearch(index);
+        searchRequestBuilder.setTypes(type);
+        searchRequestBuilder.setPostFilter(boolFilter);
+        System.out.println(searchRequestBuilder.toString());
+        SearchResponse searchResponse = searchRequestBuilder.execute().actionGet();
+        System.out.println(searchResponse.toString());
+    }
+
+    @Test
+    public void testParentChildFilter() {
+        String index = "base_index_android_1";
+        String type = "1104466504_1";
+
+//        GET /base_index_android_1/crash_1104466504_1/_search
+//        {
+//            "query": {
+//            "match": {
+//                "issueId":1022
+//            }
+//        }
+//        }
+        BoolFilterBuilder crashBoolFilter = FilterBuilders.boolFilter();
+        crashBoolFilter.must(FilterBuilders.termFilter("imei", "867404022721993"));
+        HasChildFilterBuilder crashFilter = FilterBuilders.hasChildFilter("crash_" + type, crashBoolFilter);
+
+//        GET /base_index_android_1/issue_1104466504_1/_search
+//        {
+//            "query": {
+//            "match": {
+//                "stackType":2
+//            }
+//        }
+//        }
+        BoolFilterBuilder issueFilter = FilterBuilders.boolFilter();
+        issueFilter.must(crashFilter);
+        issueFilter.must(FilterBuilders.termFilter("stackType", 2));
+
+        SearchRequestBuilder searchRequestBuilder = client.prepareSearch(index);
+        searchRequestBuilder.setTypes("issue_" + type);
+        searchRequestBuilder.setPostFilter(issueFilter);
+        searchRequestBuilder.setTimeout(TimeValue.timeValueMinutes(5));
+
+        System.out.println(searchRequestBuilder.toString());
+        SearchResponse searchResponse = searchRequestBuilder.execute().actionGet();
+        System.out.println(searchResponse.toString());
     }
 }
